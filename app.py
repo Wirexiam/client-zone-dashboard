@@ -36,4 +36,4 @@ if uploaded_file:
         # ⚡ Пауза 3 секунды перед переходом
         time.sleep(3)
         st.session_state["redirect"] = True
-        st.experimental_rerun()
+        st.rerun()
