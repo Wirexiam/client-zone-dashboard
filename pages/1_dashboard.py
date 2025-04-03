@@ -79,8 +79,8 @@ fig1 = px.sunburst(
 )
 st.plotly_chart(fig1, use_container_width=True)
 
-# --- График: Динамика --- обновлён для всех шагов сценария
-graph_df = scenario_df.copy()
+# --- График: Динамика --- (не зависимый от фильтров)
+graph_df = df.copy()  # Здесь используем весь датафрейм, без фильтрации по зонам
 
 # Если сценарий выбран — работаем по шагам
 if apply_scenario:
