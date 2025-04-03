@@ -41,127 +41,49 @@ filtered_df = df[
     (df["Зона"].isin(selected_zones)) &
     (df["Дата_утверждения"] >= pd.to_datetime(date_range[0])) &
     (df["Дата_утверждения"] <= pd.to_datetime(date_range[1]))
-]
+    ]
 
-# --- Поиск ИНН по сценарию ---
-if apply_scenario:
-    matching_inns = []
-    for inn, group in df.groupby("ИНН"):
-        path = group.sort_values("Дата_утверждения")["Зона"].tolist()
-        for i in range(len(path) - len(selected_steps) + 1):
-            if path[i:i + len(selected_steps)] == selected_steps:
-                matching_inns.append(inn)
-                break
-    scenario_df = df[df["ИНН"].isin(matching_inns)]
-else:
-    scenario_df = filtered_df.copy()
-
-# --- KPI ---
-col1, col2, col3 = st.columns(3)
-col1.metric("👤 Уникальных клиентов", scenario_df["ИНН"].nunique())
-col2.metric("🔁 Всего переходов", len(scenario_df))
-col3.metric("📅 Период", f"{date_range[0]} — {date_range[1]}")
-
-st.markdown("---")
-
-# --- График: Частота переходов ---
-transition_counts = (
-    scenario_df
-    .groupby(["Зона", "next_zone"])
-    .size()
-    .reset_index(name="Количество")
-)
-fig1 = px.sunburst(
-    transition_counts,
-    path=["Зона", "next_zone"],
-    values="Количество",
-    title="🔄 Частота переходов из зоны в зону"
-)
-st.plotly_chart(fig1, use_container_width=True)
-
-# --- График: Динамика --- обновлён для всех шагов сценария
-graph_df = scenario_df.copy()
-
-# Если сценарий выбран — работаем по шагам
-if apply_scenario:
-    steps_for_graph = selected_steps
-else:
-    steps_for_graph = zones  # Все зоны, если выбран "Отобразить все"
-
-# Собираем график по выбранным шагам
-parts = []
-for step in steps_for_graph:
-    from_part = graph_df[graph_df["Зона"] == step][["Дата_утверждения"]].copy()
-    from_part["zone"] = step
-    from_part["date"] = from_part["Дата_утверждения"]
-
-    to_part = graph_df[graph_df["next_zone"] == step][["next_date"]].copy()
-    to_part["zone"] = step
-    to_part["date"] = to_part["next_date"]
-
-    parts.append(pd.concat([from_part[["zone", "date"]], to_part[["zone", "date"]]]))
-
-if parts:
-    df_combined = pd.concat(parts)
-    df_combined["month"] = df_combined["date"].dt.to_period("M").astype(str)
-
-    monthly_trend = df_combined.groupby(["month", "zone"]).size().reset_index(name="Количество")
-
-    title = f"📈 Динамика переходов по сценариям ({selected_scenario})" if apply_scenario else "📈 Общая динамика переходов по зонам"
-    fig2 = px.line(
-        monthly_trend,
-        x="month", y="Количество", color="zone",
-        markers=True,
-        title=title
+# --- Анализ длительности перед переходом в Ч ---
+st.markdown("## ⏱️ Длительность пребывания в зонах перед переходом в Ч")
+min_days = st.slider("📉 Порог дней до перехода в Ч", min_value=0, max_value=180, value=10, step=1)
+black_inns = df[df["next_zone"] == "Ч"]["ИНН"].unique()
+durations = []
+for inn in black_inns:
+    group = df[df["ИНН"] == inn].sort_values("Дата_утверждения")
+    for i in range(len(group) - 1):
+        current = group.iloc[i]
+        next_ = group.iloc[i + 1]
+        if next_["Зона"] == "Ч":
+            days = (next_["Дата_утверждения"] - current["Дата_утверждения"]).days
+            if days >= min_days:
+                durations.append({
+                    "ИНН": inn,
+                    "Зона перед Ч": current["Зона"],
+                    "Дата входа": current["Дата_утверждения"],
+                    "Дата в Ч": next_["Дата_утверждения"],
+                    "Дней в зоне": days
+                })
+            break
+duration_df = pd.DataFrame(durations)
+if not duration_df.empty:
+    fig_duration = px.box(
+        duration_df,
+        x="Зона перед Ч", y="Дней в зоне",
+        points="all",
+        title=f"⏱️ Время в зонах перед Чёрной (от {min_days} дней)",
+        labels={"Зона перед Ч": "Зона", "Дней в зоне": "Дней до Ч"}
     )
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig_duration, use_container_width=True)
+
+    stats = duration_df.groupby("Зона перед Ч")["Дней в зоне"].agg(["mean", "median", "count"]).round(1)
+    st.markdown("### 📊 Статистика по зонам перед Ч")
+    st.dataframe(stats)
+
+    st.download_button(
+        label="📥 Скачать длительности перед Ч",
+        data=duration_df.to_csv(index=False).encode("utf-8"),
+        file_name="durations_to_black.csv",
+        mime="text/csv"
+    )
 else:
-    st.warning("⚠️ Нет данных для построения графика.")
-
-# --- Таблица примеров ---
-scenario_label = selected_scenario
-selected_steps = selected_scenario.split(" → ")
-
-st.markdown(f"### 🔎 Примеры клиентов со сценарием {scenario_label}")
-
-show_only_transitions = st.sidebar.checkbox("🔎 Показать только строки переходов (без истории)", value=False)
-
-if apply_scenario:
-    # Шаг 1. Найдём ИНН, у которых есть последовательность всех шагов
-    matching_inns = []
-    for inn, group in df.groupby("ИНН"):
-        path = group.sort_values("Дата_утверждения")["Зона"].tolist()
-        for i in range(len(path) - len(selected_steps) + 1):
-            if path[i:i + len(selected_steps)] == selected_steps:
-                matching_inns.append(inn)
-                break
-    example_df = filtered_df[filtered_df["ИНН"].isin(matching_inns)]
-
-    if show_only_transitions:
-        filters = []
-        for i in range(len(selected_steps) - 1):
-            a = selected_steps[i]
-            b = selected_steps[i + 1]
-            pair_filter = (example_df["Зона"] == a) & (example_df["next_zone"] == b)
-            filters.append(pair_filter)
-        final_filter = filters[0]
-        for f in filters[1:]:
-            final_filter |= f
-        example_df = example_df[final_filter]
-
-else:
-    example_df = filtered_df.copy()  # Показать всё
-
-st.dataframe(
-    example_df[["ИНН", "Зона", "Дата_утверждения", "next_zone", "next_date"]]
-    .sort_values(by=["ИНН", "Дата_утверждения"])
-    .reset_index(drop=True)
-)
-
-# --- Загрузка CSV ---
-st.download_button(
-    label="📥 Скачать данные по сценарию",
-    data=scenario_df.to_csv(index=False).encode("utf-8"),
-    file_name="scenario_filtered_data.csv",
-    mime="text/csv"
-)
+    st.warning("⚠️ Нет клиентов, удовлетворяющих выбранному порогу.")
